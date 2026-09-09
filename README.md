@@ -2,6 +2,8 @@
 
 Open Desktop Pet 的 Tauri 2 迁移版。它复用系统 WebView，不再随安装包携带 Electron/Chromium，因此 Windows 安装包可以显著缩小。
 
+想了解窗口、状态机和打包方案，可以阅读[《用 Tauri 做一只会“察言观色”的桌面宠物：也祝》](docs/technical-blog-zh.md)。
+
 ## 功能
 
 - 原版七状态小猪 PNG 与爱心动画
