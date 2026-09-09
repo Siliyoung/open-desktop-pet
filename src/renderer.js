@@ -18,6 +18,7 @@ const scaleInput = document.querySelector('#pet-scale');
 const scaleValue = document.querySelector('#scale-value');
 const saveStatus = document.querySelector('#save-status');
 const saveButton = form.querySelector('.save-button');
+const settingsHeader = document.querySelector('#settings-header');
 const initialMode = new URLSearchParams(window.location.search).get('mode') === 'settings' ? 'settings' : 'pet';
 
 let settings;
@@ -382,13 +383,19 @@ pet.addEventListener('pointercancel', () => {
 
 async function openSettings() {
   try {
-    await api.showMenu();
+    await api.openSettings();
   } catch {
     say('设置窗口暂时打不开，请从托盘重试。');
   }
 }
 
-pet.addEventListener('contextmenu', (event) => { event.preventDefault(); openSettings(); });
+pet.addEventListener('contextmenu', async (event) => {
+  event.preventDefault();
+  try { await api.showPetMenu(); } catch { say('右键菜单暂时打不开，请从托盘重试。'); }
+});
+settingsHeader.addEventListener('pointerdown', (event) => {
+  if (event.button === 0 && !event.target.closest('button')) api.startSettingsDrag();
+});
 document.querySelector('#hide-pet').addEventListener('click', () => api.hide());
 document.querySelector('#close-settings').addEventListener('click', () => api.closeSettings());
 scaleInput.addEventListener('input', () => { scaleValue.value = `${Math.round(Number(scaleInput.value) * 100)}%`; });

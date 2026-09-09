@@ -126,6 +126,8 @@ struct AppState {
     data: Mutex<PersistedData>,
 }
 
+struct PetContextMenu(Menu<tauri::Wry>);
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Rect {
@@ -384,6 +386,19 @@ fn get_user_activity() -> UserActivity {
 fn open_settings(app: AppHandle) -> Result<(), String> { open_settings_window(&app) }
 
 #[tauri::command]
+fn show_pet_menu(window: WebviewWindow, menu: State<'_, PetContextMenu>) -> Result<(), String> {
+    window.popup_menu(&menu.0).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn start_settings_drag(window: WebviewWindow) -> Result<(), String> {
+    if window.label() != "settings" {
+        return Err("只有设置窗口可以从标题栏拖动".into());
+    }
+    window.start_dragging().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn hide_window(window: WebviewWindow) -> Result<(), String> { window.hide().map_err(|error| error.to_string()) }
 
 #[tauri::command]
@@ -393,9 +408,25 @@ fn close_settings(window: WebviewWindow) -> Result<(), String> { window.hide().m
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "pet_greet" => {
+                if let Some(window) = app.get_webview_window("main") { let _ = window.show(); }
+                let _ = app.emit_to("main", "pet:react", PetReaction {
+                    state: "happy",
+                    message: "你好呀，我也正想和你打招呼～".into(),
+                });
+            }
+            "pet_settings" => { let _ = open_settings_window(app); }
+            "pet_hide" => {
+                if let Some(window) = app.get_webview_window("main") { let _ = window.hide(); }
+            }
+            "pet_quit" => app.exit(0),
+            _ => {}
+        })
         .invoke_handler(tauri::generate_handler![
             get_settings, update_settings, get_window_context, move_by, save_position,
-            get_user_activity, open_settings, hide_window, close_settings
+            get_user_activity, open_settings, show_pet_menu, start_settings_drag,
+            hide_window, close_settings
         ])
         .setup(|app| {
             #[cfg(target_os = "windows")]
@@ -406,6 +437,20 @@ pub fn run() {
             let initial_settings = data.settings.clone();
             let saved_position = data.position;
             app.manage(AppState { file_path, data: Mutex::new(data) });
+
+            let pet_greet_item = MenuItem::with_id(app, "pet_greet", "和也祝打招呼", true, None::<&str>)?;
+            let pet_settings_item = MenuItem::with_id(app, "pet_settings", "打开设置…", true, None::<&str>)?;
+            let pet_separator = PredefinedMenuItem::separator(app)?;
+            let pet_hide_item = MenuItem::with_id(app, "pet_hide", "让也祝退下", true, None::<&str>)?;
+            let pet_quit_item = MenuItem::with_id(app, "pet_quit", "退出程序", true, None::<&str>)?;
+            let pet_menu = Menu::with_items(app, &[
+                &pet_greet_item,
+                &pet_settings_item,
+                &pet_separator,
+                &pet_hide_item,
+                &pet_quit_item,
+            ])?;
+            app.manage(PetContextMenu(pet_menu));
 
             let show_item = MenuItem::with_id(app, "show", "显示桌宠", true, None::<&str>)?;
             let greet_item = MenuItem::with_id(app, "greet", "和它打招呼", true, None::<&str>)?;
