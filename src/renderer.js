@@ -249,7 +249,16 @@ pet.addEventListener('pointercancel', () => {
   api.ignoreMouse(true);
 });
 
-pet.addEventListener('contextmenu', (event) => { event.preventDefault(); api.showMenu(); });
+async function openSettings() {
+  try {
+    await api.showMenu();
+  } catch {
+    say('设置窗口暂时打不开，请从托盘重试。');
+  }
+}
+
+pet.addEventListener('contextmenu', (event) => { event.preventDefault(); openSettings(); });
+document.querySelector('#settings-pet').addEventListener('click', openSettings);
 document.querySelector('#hide-pet').addEventListener('click', () => api.hide());
 document.querySelector('#close-settings').addEventListener('click', () => api.closeSettings());
 scaleInput.addEventListener('input', () => { scaleValue.value = `${Math.round(Number(scaleInput.value) * 100)}%`; });

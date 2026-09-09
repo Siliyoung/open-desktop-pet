@@ -3,8 +3,7 @@ use std::{fs, path::PathBuf, sync::Mutex};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, PhysicalPosition, State, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder, WindowEvent,
+    AppHandle, Emitter, Manager, PhysicalPosition, State, WebviewWindow, WindowEvent,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
@@ -194,20 +193,12 @@ fn edge_target(bounds: &Rect, area: &Rect) -> WalkTarget {
 }
 
 fn open_settings_window(app: &AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("settings") {
-        window.show().map_err(|error| error.to_string())?;
-        return window.set_focus().map_err(|error| error.to_string());
-    }
-    WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("index.html?mode=settings".into()))
-        .title("桌宠设置")
-        .inner_size(380.0, 520.0)
-        .resizable(false)
-        .decorations(false)
-        .transparent(true)
-        .center()
-        .build()
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+    let window = app
+        .get_webview_window("settings")
+        .ok_or_else(|| "设置窗口尚未初始化".to_string())?;
+    window.unminimize().map_err(|error| error.to_string())?;
+    window.show().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -285,7 +276,7 @@ fn open_settings(app: AppHandle) -> Result<(), String> { open_settings_window(&a
 fn hide_window(window: WebviewWindow) -> Result<(), String> { window.hide().map_err(|error| error.to_string()) }
 
 #[tauri::command]
-fn close_settings(window: WebviewWindow) -> Result<(), String> { window.close().map_err(|error| error.to_string()) }
+fn close_settings(window: WebviewWindow) -> Result<(), String> { window.hide().map_err(|error| error.to_string()) }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -343,6 +334,15 @@ pub fn run() {
                     if let WindowEvent::CloseRequested { api, .. } = event {
                         api.prevent_close();
                         let _ = pet_window.hide();
+                    }
+                });
+            }
+            if let Some(window) = app.get_webview_window("settings") {
+                let settings_window = window.clone();
+                window.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = settings_window.hide();
                     }
                 });
             }
