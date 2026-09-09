@@ -17,6 +17,7 @@ const form = document.querySelector('#settings-form');
 const scaleInput = document.querySelector('#pet-scale');
 const scaleValue = document.querySelector('#scale-value');
 const saveStatus = document.querySelector('#save-status');
+const saveButton = form.querySelector('.save-button');
 const initialMode = new URLSearchParams(window.location.search).get('mode') === 'settings' ? 'settings' : 'pet';
 
 let settings;
@@ -258,27 +259,42 @@ async function openSettings() {
 }
 
 pet.addEventListener('contextmenu', (event) => { event.preventDefault(); openSettings(); });
-document.querySelector('#settings-pet').addEventListener('click', openSettings);
 document.querySelector('#hide-pet').addEventListener('click', () => api.hide());
 document.querySelector('#close-settings').addEventListener('click', () => api.closeSettings());
 scaleInput.addEventListener('input', () => { scaleValue.value = `${Math.round(Number(scaleInput.value) * 100)}%`; });
 
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
-  const next = await api.updateSettings({
-    petName: form.elements.petName.value,
-    scale: Number(form.elements.scale.value),
-    alwaysOnTop: form.elements.alwaysOnTop.checked,
-    wandering: form.elements.wandering.checked,
-    sound: form.elements.sound.checked,
-    autoStart: form.elements.autoStart.checked
-  });
-  applySettings(next);
-  saveStatus.textContent = '已保存';
-  setTimeout(() => {
-    saveStatus.textContent = '';
-    api.closeSettings();
-  }, 350);
+  saveButton.disabled = true;
+  saveStatus.classList.remove('error', 'warning');
+  saveStatus.textContent = '正在保存…';
+  try {
+    const result = await api.updateSettings({
+      petName: form.elements.petName.value,
+      scale: Number(form.elements.scale.value),
+      alwaysOnTop: form.elements.alwaysOnTop.checked,
+      wandering: form.elements.wandering.checked,
+      sound: form.elements.sound.checked,
+      autoStart: form.elements.autoStart.checked
+    });
+    applySettings(result.settings);
+    populateForm();
+    if (result.warning) {
+      saveStatus.classList.add('warning');
+      saveStatus.textContent = result.warning;
+    } else {
+      saveStatus.textContent = '已保存并应用';
+      setTimeout(() => {
+        saveStatus.textContent = '';
+        api.closeSettings();
+      }, 350);
+    }
+  } catch (error) {
+    saveStatus.classList.add('error');
+    saveStatus.textContent = `保存失败：${String(error)}`;
+  } finally {
+    saveButton.disabled = false;
+  }
 });
 
 document.addEventListener('mousemove', (event) => {

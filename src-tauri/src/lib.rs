@@ -7,8 +7,11 @@ use tauri::{
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
-const PET_WIDTH: i32 = 280;
-const PET_HEIGHT: i32 = 260;
+const WINDOW_WIDTH: f64 = 280.0;
+const WINDOW_HEIGHT: f64 = 260.0;
+const PET_BASE_SIZE: f64 = 165.0;
+const PET_RIGHT: f64 = 25.0;
+const PET_BOTTOM: f64 = 12.0;
 
 #[cfg(target_os = "windows")]
 #[repr(C)]
@@ -70,6 +73,13 @@ struct SavedPosition {
     y: i32,
 }
 
+struct MovementLimits {
+    left: i32,
+    right: i32,
+    top: i32,
+    bottom: i32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct PersistedData {
     #[serde(default)]
@@ -114,6 +124,13 @@ struct PetReaction {
     message: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SettingsUpdateResult {
+    settings: Settings,
+    warning: Option<String>,
+}
+
 fn sanitize_scale(value: f64) -> f64 {
     if !value.is_finite() {
         return 1.0;
@@ -141,10 +158,27 @@ fn write_data(state: &AppState) -> Result<(), String> {
     fs::write(&state.file_path, content).map_err(|error| error.to_string())
 }
 
-fn clamp_position(position: SavedPosition, area: &Rect) -> SavedPosition {
+fn movement_limits(window: &WebviewWindow, area: &Rect, scale: f64) -> Result<MovementLimits, String> {
+    let dpi_scale = window.scale_factor().map_err(|error| error.to_string())?;
+    let visible_size = PET_BASE_SIZE * sanitize_scale(scale) * dpi_scale;
+    let center_x = (WINDOW_WIDTH - PET_RIGHT - PET_BASE_SIZE / 2.0) * dpi_scale;
+    let visible_left = center_x - visible_size / 2.0;
+    let visible_right = center_x + visible_size / 2.0;
+    let visible_bottom = (WINDOW_HEIGHT - PET_BOTTOM) * dpi_scale;
+    let visible_top = visible_bottom - visible_size;
+
+    Ok(MovementLimits {
+        left: (area.x as f64 - visible_left).round() as i32,
+        right: (area.x as f64 + area.width as f64 - visible_right).round() as i32,
+        top: (area.y as f64 - visible_top).round() as i32,
+        bottom: (area.y as f64 + area.height as f64 - visible_bottom).round() as i32,
+    })
+}
+
+fn clamp_position(position: SavedPosition, limits: &MovementLimits) -> SavedPosition {
     SavedPosition {
-        x: position.x.clamp(area.x, area.x + area.width as i32 - PET_WIDTH),
-        y: position.y.clamp(area.y, area.y + area.height as i32 - PET_HEIGHT),
+        x: position.x.clamp(limits.left, limits.right),
+        y: position.y.clamp(limits.top, limits.bottom),
     }
 }
 
@@ -162,11 +196,11 @@ fn rect_for_window(window: &WebviewWindow) -> Result<(Rect, Rect), String> {
     ))
 }
 
-fn edge_target(bounds: &Rect, area: &Rect) -> WalkTarget {
-    let left = area.x;
-    let top = area.y;
-    let right = area.x + area.width as i32 - bounds.width as i32;
-    let bottom = area.y + area.height as i32 - bounds.height as i32;
+fn edge_target(bounds: &Rect, limits: &MovementLimits) -> WalkTarget {
+    let left = limits.left;
+    let top = limits.top;
+    let right = limits.right;
+    let bottom = limits.bottom;
     let x = bounds.x.clamp(left, right);
     let y = bounds.y.clamp(top, bottom);
     let distances = [(y - top).abs(), (x - right).abs(), (y - bottom).abs(), (x - left).abs()];
@@ -207,12 +241,38 @@ fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
 }
 
 #[tauri::command]
-fn update_settings(app: AppHandle, state: State<'_, AppState>, patch: SettingsPatch) -> Result<Settings, String> {
+fn update_settings(app: AppHandle, state: State<'_, AppState>, patch: SettingsPatch) -> Result<SettingsUpdateResult, String> {
+    let previous_auto_start = state
+        .data
+        .lock()
+        .map_err(|_| "配置锁已损坏".to_string())?
+        .settings
+        .auto_start;
+    let requested_auto_start = patch.auto_start.unwrap_or(previous_auto_start);
+    let mut effective_auto_start = requested_auto_start;
+    let mut warning = None;
+
+    let autostart = app.autolaunch();
+    match autostart.is_enabled() {
+        Ok(enabled) if enabled == requested_auto_start => {}
+        Ok(_) => {
+            let result = if requested_auto_start { autostart.enable() } else { autostart.disable() };
+            if let Err(error) = result {
+                effective_auto_start = previous_auto_start;
+                warning = Some(format!("其他设置已保存，但开机启动设置失败：{error}"));
+            }
+        }
+        Err(error) => {
+            effective_auto_start = previous_auto_start;
+            warning = Some(format!("其他设置已保存，但无法读取开机启动状态：{error}"));
+        }
+    }
+
     let settings = {
         let mut data = state.data.lock().map_err(|_| "配置锁已损坏".to_string())?;
         let current = &mut data.settings;
         if let Some(value) = patch.always_on_top { current.always_on_top = value; }
-        if let Some(value) = patch.auto_start { current.auto_start = value; }
+        current.auto_start = effective_auto_start;
         if let Some(value) = patch.wandering { current.wandering = value; }
         if let Some(value) = patch.sound { current.sound = value; }
         if let Some(value) = patch.scale { current.scale = sanitize_scale(value); }
@@ -225,26 +285,32 @@ fn update_settings(app: AppHandle, state: State<'_, AppState>, patch: SettingsPa
     write_data(&state)?;
     if let Some(window) = app.get_webview_window("main") {
         window.set_always_on_top(settings.always_on_top).map_err(|error| error.to_string())?;
+        let (bounds, area) = rect_for_window(&window)?;
+        let limits = movement_limits(&window, &area, settings.scale)?;
+        let safe = clamp_position(SavedPosition { x: bounds.x, y: bounds.y }, &limits);
+        window.set_position(PhysicalPosition::new(safe.x, safe.y)).map_err(|error| error.to_string())?;
     }
-    let autostart = app.autolaunch();
-    if settings.auto_start { autostart.enable() } else { autostart.disable() }.map_err(|error| error.to_string())?;
     app.emit_to("main", "settings:changed", settings.clone()).map_err(|error| error.to_string())?;
     app.emit_to("main", "pet:react", PetReaction { state: "happy", message: "设置已经保存好啦～".into() }).map_err(|error| error.to_string())?;
-    Ok(settings)
+    Ok(SettingsUpdateResult { settings, warning })
 }
 
 #[tauri::command]
-fn get_window_context(window: WebviewWindow) -> Result<WindowContext, String> {
+fn get_window_context(window: WebviewWindow, state: State<'_, AppState>) -> Result<WindowContext, String> {
     let (bounds, work_area) = rect_for_window(&window)?;
-    let target = edge_target(&bounds, &work_area);
+    let scale = state.data.lock().map_err(|_| "配置锁已损坏".to_string())?.settings.scale;
+    let limits = movement_limits(&window, &work_area, scale)?;
+    let target = edge_target(&bounds, &limits);
     Ok(WindowContext { bounds, work_area, target })
 }
 
 #[tauri::command]
-fn move_by(window: WebviewWindow, x: f64, y: f64) -> Result<(), String> {
+fn move_by(window: WebviewWindow, state: State<'_, AppState>, x: f64, y: f64) -> Result<(), String> {
     if !x.is_finite() || !y.is_finite() { return Ok(()); }
     let (bounds, area) = rect_for_window(&window)?;
-    let next = clamp_position(SavedPosition { x: bounds.x + x.round() as i32, y: bounds.y + y.round() as i32 }, &area);
+    let scale = state.data.lock().map_err(|_| "配置锁已损坏".to_string())?.settings.scale;
+    let limits = movement_limits(&window, &area, scale)?;
+    let next = clamp_position(SavedPosition { x: bounds.x + x.round() as i32, y: bounds.y + y.round() as i32 }, &limits);
     window.set_position(PhysicalPosition::new(next.x, next.y)).map_err(|error| error.to_string())
 }
 
@@ -325,7 +391,8 @@ pub fn run() {
                 window.set_always_on_top(initial_settings.always_on_top)?;
                 if let Some(position) = saved_position {
                     if let Ok((_, area)) = rect_for_window(&window) {
-                        let safe = clamp_position(position, &area);
+                        let limits = movement_limits(&window, &area, initial_settings.scale)?;
+                        let safe = clamp_position(position, &limits);
                         window.set_position(PhysicalPosition::new(safe.x, safe.y))?;
                     }
                 }
