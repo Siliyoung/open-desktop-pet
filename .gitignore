@@ -1,0 +1,13 @@
+node_modules/
+dist/
+src-tauri/target/
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+release/
+rustup-init.exe
+rust-*.tar.xz
+cargo-*.tar.xz
+vs_BuildTools.exe

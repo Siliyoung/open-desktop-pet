@@ -1,0 +1,25 @@
+{
+  "name": "open-desktop-pet-tauri",
+  "private": false,
+  "version": "0.2.0",
+  "description": "A tiny open-source desktop companion powered by Tauri 2.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "check": "npm run build && cargo check --manifest-path src-tauri/Cargo.toml",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "dist:win": "tauri build --bundles nsis",
+    "dist:win:gnu": "\"%USERPROFILE%\\.cargo\\bin\\rustup.exe\" run stable-x86_64-pc-windows-gnu cmd /c tauri build --target x86_64-pc-windows-gnu --bundles nsis"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.8.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.8.0",
+    "vite": "^7.1.0"
+  },
+  "license": "MIT"
+}

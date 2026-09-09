@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' asset: http://asset.localhost data:; connect-src ipc: http://ipc.localhost">
+    <title>Open Desktop Pet</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main id="pet-view" aria-label="桌面宠物">
+      <div id="speech" class="speech" role="status" aria-live="polite"></div>
+      <button id="pet" class="pet state-idle interactive" aria-label="摸摸也祝" title="左键互动，右键打开菜单">
+        <span class="pet-motion">
+          <img id="pet-image" class="pet-image" src="assets/pig-idle.png" alt="围着绿色围巾的小猪桌宠" draggable="false">
+          <img class="heart" src="assets/heart.png" alt="" aria-hidden="true" draggable="false">
+        </span>
+      </button>
+      <button id="hide-pet" class="hide-button interactive" title="隐藏到托盘" aria-label="隐藏到托盘">×</button>
+    </main>
+
+    <section id="settings-view" class="settings-view interactive" hidden>
+      <header>
+        <h1>桌宠设置</h1>
+        <button id="close-settings" class="icon-button" aria-label="关闭设置">×</button>
+      </header>
+      <form id="settings-form">
+        <label class="field-label" for="pet-name">名字</label>
+        <input id="pet-name" name="petName" maxlength="12" autocomplete="off">
+
+        <label class="range-row" for="pet-scale">
+          <span>宠物大小 <output id="scale-value">100%</output></span>
+          <input id="pet-scale" name="scale" type="range" min="0.2" max="1.4" step="0.1">
+        </label>
+
+        <label class="switch-row"><span><strong>保持置顶</strong><small>显示在其他窗口上方</small></span><input name="alwaysOnTop" type="checkbox"><i></i></label>
+        <label class="switch-row"><span><strong>自动散步</strong><small>偶尔沿桌面底部移动</small></span><input name="wandering" type="checkbox"><i></i></label>
+        <label class="switch-row"><span><strong>互动音效</strong><small>轻量合成提示音，不含外部音频</small></span><input name="sound" type="checkbox"><i></i></label>
+        <label class="switch-row"><span><strong>开机启动</strong><small>登录系统后自动陪伴</small></span><input name="autoStart" type="checkbox"><i></i></label>
+
+        <button class="save-button" type="submit">保存设置</button>
+        <p id="save-status" class="save-status" role="status"></p>
+      </form>
+    </section>
+    <script type="module" src="renderer.js"></script>
+  </body>
+</html>

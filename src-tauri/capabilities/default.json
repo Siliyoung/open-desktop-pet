@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Permissions for the desktop pet and settings windows",
+  "windows": ["main", "settings"],
+  "permissions": ["core:default"]
+}

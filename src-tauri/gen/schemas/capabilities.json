@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Permissions for the desktop pet and settings windows","local":true,"windows":["main","settings"],"permissions":["core:default"]}}
