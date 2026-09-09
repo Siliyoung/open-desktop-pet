@@ -27,16 +27,35 @@ let sleepTimer;
 let wanderTimer;
 let wanderStepTimer;
 let activityTimer;
+let activityPollPending = false;
 let dragging = false;
 let dragStart;
 let dragPoint;
 let audioContext;
 let longPressTimer;
 let longPressHandled = false;
+let cheeringUp = false;
+let wakingFromTouch = false;
 let currentMode = initialMode;
 let currentState = 'idle';
 let userWorking = false;
+let userActivityMode = 'idle';
 let interactionUntil = 0;
+let lastPetInteractionAt = Date.now();
+let lastSadAt = 0;
+let keyboardBurstStartedAt = 0;
+let lastObservedKeyboardAt = 0;
+let keyboardBurstSamples = 0;
+let keyboardWorkActive = false;
+
+const KEYBOARD_WORKING_HOLD_MS = 8_000;
+const KEYBOARD_BURST_GAP_MS = 2_200;
+const KEYBOARD_WORK_MIN_MS = 1_500;
+const KEYBOARD_WORK_MIN_SAMPLES = 3;
+const RECENT_INPUT_HOLD_MS = 15_000;
+const DROWSY_AFTER_IDLE_MS = 75_000;
+const NEGLECT_AFTER_MS = 4 * 60_000;
+const SAD_COOLDOWN_MS = 2 * 60_000;
 
 const phrases = ['记得喝水呀', '今天也辛苦啦', '伸个懒腰吧', '我会安静陪着你', '要不要休息五分钟？'];
 const tapMessages = ['哼哼？', '今天也来啦～', '记录点什么吧？', '今天也要加油！', '我一直都在～', '戳到我啦！'];
@@ -44,7 +63,8 @@ const pettedMessages = ['嘿嘿～', '好舒服。', '再摸一下嘛～', '哼�
 const petImages = {
   idle: pigIdleUrl, thinking: pigThinkingUrl, happy: pigHappyUrl,
   sad: pigSadUrl, wave: pigWaveUrl, sleep: pigSleepUrl,
-  petted: pigPettedUrl, walk: pigIdleUrl
+  petted: pigPettedUrl, walk: pigIdleUrl, drowsy: pigSleepUrl,
+  wake: pigWaveUrl
 };
 
 function setState(state, duration = 0) {
@@ -56,7 +76,6 @@ function setState(state, duration = 0) {
   pet.className = `pet state-${safeState} interactive`;
   if (safeState === 'petted') pet.classList.add('show-heart');
   if (duration) stateTimer = setTimeout(() => setState('idle'), duration);
-  resetSleepTimer();
 }
 
 function say(message, duration = 3200) {
@@ -83,9 +102,64 @@ function beep() {
   } catch { /* Audio is optional. */ }
 }
 
-function resetSleepTimer() {
+function wakeUp() {
   clearTimeout(sleepTimer);
-  sleepTimer = setTimeout(() => { if (!userWorking) setState('sleep'); }, 90_000);
+  setState('wake', 1800);
+  say('伸个懒腰，醒来啦～', 2200);
+}
+
+function beginDrowsy() {
+  if (currentState === 'drowsy' || currentState === 'sleep') return;
+  userWorking = true;
+  clearTimeout(wanderTimer);
+  clearInterval(wanderStepTimer);
+  setState('drowsy');
+  say('有点累了，睡会儿～', 2800);
+  clearTimeout(sleepTimer);
+  sleepTimer = setTimeout(() => {
+    if (userActivityMode === 'drowsy') {
+      userActivityMode = 'sleeping';
+      setState('sleep');
+    }
+  }, 3000);
+}
+
+function maybeFeelLonely() {
+  const now = Date.now();
+  const canFeelLonely = userActivityMode !== 'working'
+    && userActivityMode !== 'drowsy'
+    && userActivityMode !== 'sleeping'
+    && currentState === 'idle';
+  if (canFeelLonely && now - lastPetInteractionAt >= NEGLECT_AFTER_MS && now - lastSadAt >= SAD_COOLDOWN_MS) {
+    lastSadAt = now;
+    setState('sad', 8000);
+    say('好久没理我了……摸摸我嘛', 4200);
+  }
+}
+
+function hasSustainedKeyboardActivity(keyboardIdleMs) {
+  if (keyboardIdleMs === null) return false;
+  const now = Date.now();
+  const observedKeyboardAt = now - keyboardIdleMs;
+  if (observedKeyboardAt - lastObservedKeyboardAt > 120) {
+    if (!lastObservedKeyboardAt || observedKeyboardAt - lastObservedKeyboardAt > KEYBOARD_BURST_GAP_MS) {
+      keyboardBurstStartedAt = observedKeyboardAt;
+      keyboardBurstSamples = 1;
+    } else {
+      keyboardBurstSamples += 1;
+    }
+    lastObservedKeyboardAt = observedKeyboardAt;
+  }
+  if (keyboardBurstSamples >= KEYBOARD_WORK_MIN_SAMPLES
+    && lastObservedKeyboardAt - keyboardBurstStartedAt >= KEYBOARD_WORK_MIN_MS) {
+    keyboardWorkActive = true;
+  }
+  if (keyboardIdleMs >= KEYBOARD_WORKING_HOLD_MS) {
+    keyboardWorkActive = false;
+    keyboardBurstStartedAt = 0;
+    keyboardBurstSamples = 0;
+  }
+  return keyboardWorkActive;
 }
 
 function scheduleWander(delay = 18_000 + Math.random() * 22_000) {
@@ -103,6 +177,10 @@ function scheduleWander(delay = 18_000 + Math.random() * 22_000) {
 
       setState('walk');
       if (remainingX < 0) pet.classList.add('facing-left');
+      const basePace = 0.65 + Math.random() * 0.45;
+      const pacePhase = Math.random() * Math.PI * 2;
+      let walkTick = 0;
+      pet.style.setProperty('--walk-cycle', `${(0.48 - basePace * 0.12).toFixed(2)}s`);
       wanderStepTimer = setInterval(() => {
         if (!settings.wandering || dragging || userWorking || currentMode !== 'pet') {
           clearInterval(wanderStepTimer);
@@ -118,14 +196,16 @@ function scheduleWander(delay = 18_000 + Math.random() * 22_000) {
           if (!target.joining && Math.random() > .55) say(phrases[Math.floor(Math.random() * phrases.length)]);
           return scheduleWander(target.joining ? 900 : 2200 + Math.random() * 2200);
         }
-        const step = Math.min(2.5, distance);
+        const paceVariation = 0.76 + 0.28 * (1 + Math.sin(pacePhase + walkTick / 22));
+        const step = Math.min(basePace * paceVariation, distance);
         const moveX = remainingX / distance * step;
         const moveY = remainingY / distance * step;
         api.moveBy(moveX, moveY);
         remainingX -= moveX;
         remainingY -= moveY;
         remainingDistance = distance - step;
-      }, 35);
+        walkTick += 1;
+      }, 40);
     } catch {
       setState('idle');
       scheduleWander();
@@ -134,29 +214,66 @@ function scheduleWander(delay = 18_000 + Math.random() * 22_000) {
 }
 
 async function pollUserActivity() {
-  if (currentMode !== 'pet') return;
+  if (currentMode !== 'pet' || activityPollPending) return;
+  activityPollPending = true;
   try {
-    const idleMs = await api.getUserIdleMs();
-    const activeNow = idleMs < 2200;
-    if (activeNow) {
+    const { idleMs, keyboardIdleMs } = await api.getUserActivity();
+    const nextMode = hasSustainedKeyboardActivity(keyboardIdleMs)
+      ? 'working'
+      : idleMs < RECENT_INPUT_HOLD_MS
+        ? 'active'
+        : idleMs < DROWSY_AFTER_IDLE_MS
+          ? 'idle'
+          : userActivityMode === 'sleeping' ? 'sleeping' : 'drowsy';
+    const previousMode = userActivityMode;
+    userActivityMode = nextMode;
+
+    if (nextMode === 'working') {
       userWorking = true;
       clearTimeout(wanderTimer);
       clearInterval(wanderStepTimer);
+      clearTimeout(sleepTimer);
+      if (previousMode === 'drowsy' || previousMode === 'sleeping') {
+        wakeUp();
+        return;
+      }
       if (Date.now() < interactionUntil || dragging) return;
       speech.classList.remove('visible');
       if (currentState !== 'thinking') setState('thinking');
-    } else if (userWorking && idleMs > 3800) {
+    } else if (nextMode === 'active') {
+      userWorking = true;
+      clearTimeout(wanderTimer);
+      clearInterval(wanderStepTimer);
+      clearTimeout(sleepTimer);
+      if (previousMode === 'drowsy' || previousMode === 'sleeping') {
+        wakeUp();
+        return;
+      }
+      if (Date.now() >= interactionUntil && !dragging && (currentState === 'thinking' || currentState === 'walk')) {
+        setState('idle');
+      }
+      maybeFeelLonely();
+    } else if (nextMode === 'drowsy') {
+      beginDrowsy();
+    } else if (nextMode === 'sleeping') {
+      userWorking = true;
+      clearTimeout(wanderTimer);
+      clearInterval(wanderStepTimer);
+    } else if (previousMode !== 'idle') {
       userWorking = false;
-      if (currentState === 'thinking') setState('idle');
-      scheduleWander(8000);
+      clearTimeout(sleepTimer);
+      if (currentState === 'thinking' || currentState === 'wake' || currentState === 'walk') setState('idle');
+      scheduleWander();
     }
+    if (nextMode === 'idle') maybeFeelLonely();
   } catch { /* Activity detection is optional on unsupported systems. */ }
+  finally { activityPollPending = false; }
 }
 
 function startActivityMonitoring() {
   clearInterval(activityTimer);
   pollUserActivity();
-  activityTimer = setInterval(pollUserActivity, 800);
+  activityTimer = setInterval(pollUserActivity, 500);
 }
 
 function applySettings(next) {
@@ -194,7 +311,6 @@ function switchMode(mode) {
   } else {
     startActivityMonitoring();
     scheduleWander();
-    resetSleepTimer();
   }
 }
 
@@ -206,8 +322,18 @@ pet.addEventListener('pointerdown', (event) => {
   dragStart = { x: event.screenX, y: event.screenY };
   dragPoint = { ...dragStart };
   longPressHandled = false;
+  cheeringUp = currentState === 'sad';
+  wakingFromTouch = currentState === 'sleep' || currentState === 'drowsy';
+  lastPetInteractionAt = Date.now();
+  if (wakingFromTouch) {
+    wakeUp();
+  } else if (cheeringUp) {
+    setState('happy', 1800);
+    say('你回来陪我啦～', 2200);
+    beep();
+  }
   clearTimeout(longPressTimer);
-  longPressTimer = setTimeout(() => {
+  if (!wakingFromTouch) longPressTimer = setTimeout(() => {
     if (!dragging) return;
     longPressHandled = true;
     setState('petted', 1500);
@@ -235,11 +361,13 @@ pet.addEventListener('pointerup', (event) => {
   api.ignoreMouse(true);
   api.savePosition();
   const travel = Math.hypot(event.screenX - dragStart.x, event.screenY - dragStart.y);
-  if (!longPressHandled && travel < 6) {
+  if (!longPressHandled && !cheeringUp && !wakingFromTouch && travel < 6) {
     setState('wave', 1000);
     say(tapMessages[Math.floor(Math.random() * tapMessages.length)], 2000);
     beep();
   }
+  cheeringUp = false;
+  wakingFromTouch = false;
   scheduleWander();
 });
 
@@ -247,6 +375,8 @@ pet.addEventListener('pointercancel', () => {
   clearTimeout(longPressTimer);
   dragging = false;
   longPressHandled = false;
+  cheeringUp = false;
+  wakingFromTouch = false;
   api.ignoreMouse(true);
 });
 

@@ -26,7 +26,7 @@ window.desktopPet = {
   getSettings: () => invoke('get_settings'),
   updateSettings: (patch) => invoke('update_settings', { patch }),
   getWindowContext: () => invoke('get_window_context'),
-  getUserIdleMs: () => invoke('get_user_idle_ms'),
+  getUserActivity: () => invoke('get_user_activity'),
   moveBy,
   savePosition: () => invoke('save_position'),
   ignoreMouse,

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf, sync::Mutex};
+#[cfg(target_os = "windows")]
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -21,15 +23,47 @@ struct LastInputInfo {
 }
 
 #[cfg(target_os = "windows")]
+static KEYBOARD_HOOK_READY: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "windows")]
+static LAST_KEYBOARD_INPUT: AtomicU32 = AtomicU32::new(0);
+
+#[cfg(target_os = "windows")]
 #[link(name = "user32")]
 extern "system" {
     fn GetLastInputInfo(info: *mut LastInputInfo) -> i32;
+    fn SetWindowsHookExW(
+        id_hook: i32,
+        callback: Option<unsafe extern "system" fn(i32, usize, isize) -> isize>,
+        module: isize,
+        thread_id: u32,
+    ) -> isize;
+    fn CallNextHookEx(hook: isize, code: i32, message: usize, data: isize) -> isize;
 }
 
 #[cfg(target_os = "windows")]
 #[link(name = "kernel32")]
 extern "system" {
     fn GetTickCount() -> u32;
+    fn GetModuleHandleW(module_name: *const u16) -> isize;
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn keyboard_activity_hook(code: i32, message: usize, data: isize) -> isize {
+    const WM_KEYDOWN: usize = 0x0100;
+    const WM_SYSKEYDOWN: usize = 0x0104;
+    if code >= 0 && (message == WM_KEYDOWN || message == WM_SYSKEYDOWN) {
+        LAST_KEYBOARD_INPUT.store(GetTickCount(), Ordering::Relaxed);
+    }
+    CallNextHookEx(0, code, message, data)
+}
+
+#[cfg(target_os = "windows")]
+fn install_keyboard_activity_hook() {
+    const WH_KEYBOARD_LL: i32 = 13;
+    LAST_KEYBOARD_INPUT.store(unsafe { GetTickCount() }.wrapping_sub(60_000), Ordering::Relaxed);
+    let module = unsafe { GetModuleHandleW(std::ptr::null()) };
+    let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_activity_hook), module, 0) };
+    KEYBOARD_HOOK_READY.store(hook != 0, Ordering::Relaxed);
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,6 +150,13 @@ struct WindowContext {
     bounds: Rect,
     work_area: Rect,
     target: WalkTarget,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UserActivity {
+    idle_ms: u32,
+    keyboard_idle_ms: Option<u32>,
 }
 
 #[derive(Clone, Serialize)]
@@ -322,17 +363,21 @@ fn save_position(window: WebviewWindow, state: State<'_, AppState>) -> Result<()
 }
 
 #[tauri::command]
-fn get_user_idle_ms() -> u32 {
+fn get_user_activity() -> UserActivity {
     #[cfg(target_os = "windows")]
     {
         let mut info = LastInputInfo { size: std::mem::size_of::<LastInputInfo>() as u32, time: 0 };
+        let now = unsafe { GetTickCount() };
         if unsafe { GetLastInputInfo(&mut info) } == 0 {
-            return u32::MAX;
+            return UserActivity { idle_ms: u32::MAX, keyboard_idle_ms: None };
         }
-        return unsafe { GetTickCount() }.wrapping_sub(info.time);
+        let keyboard_idle_ms = KEYBOARD_HOOK_READY
+            .load(Ordering::Relaxed)
+            .then(|| now.wrapping_sub(LAST_KEYBOARD_INPUT.load(Ordering::Relaxed)));
+        return UserActivity { idle_ms: now.wrapping_sub(info.time), keyboard_idle_ms };
     }
     #[cfg(not(target_os = "windows"))]
-    u32::MAX
+    UserActivity { idle_ms: u32::MAX, keyboard_idle_ms: None }
 }
 
 #[tauri::command]
@@ -350,9 +395,12 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .invoke_handler(tauri::generate_handler![
             get_settings, update_settings, get_window_context, move_by, save_position,
-            get_user_idle_ms, open_settings, hide_window, close_settings
+            get_user_activity, open_settings, hide_window, close_settings
         ])
         .setup(|app| {
+            #[cfg(target_os = "windows")]
+            install_keyboard_activity_hook();
+
             let file_path = app.path().app_config_dir()?.join("settings.json");
             let data = read_data(&file_path);
             let initial_settings = data.settings.clone();
