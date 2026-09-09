@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Open Desktop Pet",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "identifier": "com.opendeskpet.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -29,7 +29,7 @@
         "url": "index.html?mode=settings",
         "title": "桌宠设置",
         "width": 380,
-        "height": 520,
+        "height": 575,
         "resizable": false,
         "fullscreen": false,
         "decorations": false,

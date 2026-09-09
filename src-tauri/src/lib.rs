@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf, sync::Mutex};
 #[cfg(target_os = "windows")]
+use std::thread;
+#[cfg(target_os = "windows")]
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
@@ -23,6 +25,25 @@ struct LastInputInfo {
 }
 
 #[cfg(target_os = "windows")]
+#[repr(C)]
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+#[cfg(target_os = "windows")]
+#[repr(C)]
+struct Message {
+    window: isize,
+    message: u32,
+    w_param: usize,
+    l_param: isize,
+    time: u32,
+    point: Point,
+    private: u32,
+}
+
+#[cfg(target_os = "windows")]
 static KEYBOARD_HOOK_READY: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "windows")]
 static LAST_KEYBOARD_INPUT: AtomicU32 = AtomicU32::new(0);
@@ -38,6 +59,7 @@ extern "system" {
         thread_id: u32,
     ) -> isize;
     fn CallNextHookEx(hook: isize, code: i32, message: usize, data: isize) -> isize;
+    fn GetMessageW(message: *mut Message, window: isize, min: u32, max: u32) -> i32;
 }
 
 #[cfg(target_os = "windows")]
@@ -59,14 +81,27 @@ unsafe extern "system" fn keyboard_activity_hook(code: i32, message: usize, data
 
 #[cfg(target_os = "windows")]
 fn install_keyboard_activity_hook() {
-    const WH_KEYBOARD_LL: i32 = 13;
     LAST_KEYBOARD_INPUT.store(unsafe { GetTickCount() }.wrapping_sub(60_000), Ordering::Relaxed);
-    let module = unsafe { GetModuleHandleW(std::ptr::null()) };
-    let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_activity_hook), module, 0) };
-    KEYBOARD_HOOK_READY.store(hook != 0, Ordering::Relaxed);
+    let _ = thread::Builder::new()
+        .name("desktop-pet-keyboard-monitor".into())
+        .spawn(|| {
+            const WH_KEYBOARD_LL: i32 = 13;
+            let module = unsafe { GetModuleHandleW(std::ptr::null()) };
+            let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_activity_hook), module, 0) };
+            KEYBOARD_HOOK_READY.store(hook != 0, Ordering::Relaxed);
+            if hook == 0 {
+                return;
+            }
+
+            // Low-level hooks only receive events while their installing thread
+            // pumps Windows messages, so keep a dedicated message loop alive.
+            let mut message: Message = unsafe { std::mem::zeroed() };
+            while unsafe { GetMessageW(&mut message, 0, 0, 0) } > 0 {}
+        });
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 #[serde(rename_all = "camelCase")]
 struct Settings {
     always_on_top: bool,
@@ -74,6 +109,7 @@ struct Settings {
     wandering: bool,
     sound: bool,
     scale: f64,
+    walk_speed: f64,
     pet_name: String,
 }
 
@@ -85,6 +121,7 @@ impl Default for Settings {
             wandering: true,
             sound: true,
             scale: 1.0,
+            walk_speed: 1.0,
             pet_name: "也祝".into(),
         }
     }
@@ -98,6 +135,7 @@ struct SettingsPatch {
     wandering: Option<bool>,
     sound: Option<bool>,
     scale: Option<f64>,
+    walk_speed: Option<f64>,
     pet_name: Option<String>,
 }
 
@@ -179,6 +217,13 @@ fn sanitize_scale(value: f64) -> f64 {
         return 1.0;
     }
     ((value * 10.0).round() / 10.0).clamp(0.2, 1.4)
+}
+
+fn sanitize_walk_speed(value: f64) -> f64 {
+    if !value.is_finite() {
+        return 1.0;
+    }
+    ((value * 10.0).round() / 10.0).clamp(0.5, 2.0)
 }
 
 fn read_data(file_path: &PathBuf) -> PersistedData {
@@ -319,6 +364,7 @@ fn update_settings(app: AppHandle, state: State<'_, AppState>, patch: SettingsPa
         if let Some(value) = patch.wandering { current.wandering = value; }
         if let Some(value) = patch.sound { current.sound = value; }
         if let Some(value) = patch.scale { current.scale = sanitize_scale(value); }
+        if let Some(value) = patch.walk_speed { current.walk_speed = sanitize_walk_speed(value); }
         if let Some(value) = patch.pet_name {
             let trimmed = value.trim();
             if !trimmed.is_empty() { current.pet_name = trimmed.chars().take(12).collect(); }
@@ -510,4 +556,27 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("failed to run Open Desktop Pet");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_settings_gain_the_default_walk_speed() {
+        let settings: Settings = serde_json::from_str(
+            r#"{"alwaysOnTop":true,"autoStart":false,"wandering":true,"sound":true,"scale":0.6,"petName":"也祝"}"#,
+        )
+        .expect("旧配置应该能够迁移");
+        assert_eq!(settings.scale, 0.6);
+        assert_eq!(settings.walk_speed, 1.0);
+    }
+
+    #[test]
+    fn walk_speed_is_rounded_and_bounded() {
+        assert_eq!(sanitize_walk_speed(0.1), 0.5);
+        assert_eq!(sanitize_walk_speed(1.26), 1.3);
+        assert_eq!(sanitize_walk_speed(4.0), 2.0);
+        assert_eq!(sanitize_walk_speed(f64::NAN), 1.0);
+    }
 }

@@ -16,6 +16,8 @@ const speech = document.querySelector('#speech');
 const form = document.querySelector('#settings-form');
 const scaleInput = document.querySelector('#pet-scale');
 const scaleValue = document.querySelector('#scale-value');
+const walkSpeedInput = document.querySelector('#walk-speed');
+const walkSpeedValue = document.querySelector('#walk-speed-value');
 const saveStatus = document.querySelector('#save-status');
 const saveButton = form.querySelector('.save-button');
 const settingsHeader = document.querySelector('#settings-header');
@@ -48,6 +50,7 @@ let keyboardBurstStartedAt = 0;
 let lastObservedKeyboardAt = 0;
 let keyboardBurstSamples = 0;
 let keyboardWorkActive = false;
+let activityFailureCount = 0;
 
 const KEYBOARD_WORKING_HOLD_MS = 8_000;
 const KEYBOARD_BURST_GAP_MS = 2_200;
@@ -178,8 +181,9 @@ function scheduleWander(delay = 18_000 + Math.random() * 22_000) {
 
       setState('walk');
       if (remainingX < 0) pet.classList.add('facing-left');
-      const basePace = 0.65 + Math.random() * 0.45;
+      const basePace = (0.65 + Math.random() * 0.45) * settings.walkSpeed;
       const pacePhase = Math.random() * Math.PI * 2;
+      const walkUntil = Date.now() + 14_000 + Math.random() * 18_000;
       let walkTick = 0;
       pet.style.setProperty('--walk-cycle', `${(0.48 - basePace * 0.12).toFixed(2)}s`);
       wanderStepTimer = setInterval(() => {
@@ -187,6 +191,12 @@ function scheduleWander(delay = 18_000 + Math.random() * 22_000) {
           clearInterval(wanderStepTimer);
           setState('idle');
           return scheduleWander();
+        }
+        if (Date.now() >= walkUntil) {
+          clearInterval(wanderStepTimer);
+          api.savePosition();
+          setState('idle');
+          return scheduleWander(14_000 + Math.random() * 18_000);
         }
         const distance = Math.hypot(remainingX, remainingY);
         if (distance <= 3) {
@@ -267,7 +277,17 @@ async function pollUserActivity() {
       scheduleWander();
     }
     if (nextMode === 'idle') maybeFeelLonely();
-  } catch { /* Activity detection is optional on unsupported systems. */ }
+    activityFailureCount = 0;
+  } catch (error) {
+    console.error('读取用户活动状态失败：', error);
+    activityFailureCount += 1;
+    if (activityFailureCount >= 3) {
+      userWorking = true;
+      clearTimeout(wanderTimer);
+      clearInterval(wanderStepTimer);
+      if (currentState === 'walk') setState('idle');
+    }
+  }
   finally { activityPollPending = false; }
 }
 
@@ -290,11 +310,13 @@ function applySettings(next) {
 function populateForm() {
   form.elements.petName.value = settings.petName;
   form.elements.scale.value = settings.scale;
+  form.elements.walkSpeed.value = settings.walkSpeed;
   form.elements.alwaysOnTop.checked = settings.alwaysOnTop;
   form.elements.wandering.checked = settings.wandering;
   form.elements.sound.checked = settings.sound;
   form.elements.autoStart.checked = settings.autoStart;
   scaleValue.value = `${Math.round(settings.scale * 100)}%`;
+  walkSpeedValue.value = `${Math.round(settings.walkSpeed * 100)}%`;
 }
 
 function switchMode(mode) {
@@ -399,6 +421,7 @@ settingsHeader.addEventListener('pointerdown', (event) => {
 document.querySelector('#hide-pet').addEventListener('click', () => api.hide());
 document.querySelector('#close-settings').addEventListener('click', () => api.closeSettings());
 scaleInput.addEventListener('input', () => { scaleValue.value = `${Math.round(Number(scaleInput.value) * 100)}%`; });
+walkSpeedInput.addEventListener('input', () => { walkSpeedValue.value = `${Math.round(Number(walkSpeedInput.value) * 100)}%`; });
 
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -409,6 +432,7 @@ form.addEventListener('submit', async (event) => {
     const result = await api.updateSettings({
       petName: form.elements.petName.value,
       scale: Number(form.elements.scale.value),
+      walkSpeed: Number(form.elements.walkSpeed.value),
       alwaysOnTop: form.elements.alwaysOnTop.checked,
       wandering: form.elements.wandering.checked,
       sound: form.elements.sound.checked,
@@ -443,8 +467,19 @@ api.onMode(switchMode);
 api.onSettingsChanged(applySettings);
 api.onReact(({ state, message }) => { setState(state, 1400); say(message); beep(); });
 
-api.getSettings().then((value) => {
-  applySettings(value);
-  switchMode(initialMode);
-  if (initialMode === 'pet') say(`你好，我是${settings.petName}`);
-});
+api.getSettings()
+  .then((value) => {
+    applySettings(value);
+    switchMode(initialMode);
+    if (initialMode === 'pet') say(`你好，我是${settings.petName}`);
+  })
+  .catch((error) => {
+    console.error('配置读取失败：', error);
+    applySettings({
+      petName: '也祝', scale: 1, walkSpeed: 1,
+      alwaysOnTop: true, wandering: true, sound: true, autoStart: false
+    });
+    switchMode(initialMode);
+    if (initialMode === 'pet') say('配置读取失败，已使用默认设置');
+  })
+  .finally(() => document.documentElement.classList.remove('app-loading'));

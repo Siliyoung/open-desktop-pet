@@ -1,7 +1,7 @@
 {
   "name": "open-desktop-pet-tauri",
   "private": false,
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "A tiny open-source desktop companion powered by Tauri 2.",
   "type": "module",
   "scripts": {
