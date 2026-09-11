@@ -11,3 +11,5 @@ rustup-init.exe
 rust-*.tar.xz
 cargo-*.tar.xz
 vs_BuildTools.exe
+.tmp-gh/
+codex-pet/yezhu-run/
